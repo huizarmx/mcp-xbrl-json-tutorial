@@ -1,0 +1,99 @@
+services:
+  # PostgreSQL - Database backend for FerretDB (using official FerretDB recommended image)
+  postgres:
+    image: ghcr.io/ferretdb/postgres-documentdb:17-0.102.0-ferretdb-2.0.0
+    container_name: xbrl-postgres
+    platform: linux/amd64    
+    environment:
+      - POSTGRES_USER=ferretdb
+      - POSTGRES_PASSWORD=ferretdb_password
+      - POSTGRES_DB=postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ferretdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: on-failure
+
+  # FerretDB - MongoDB-compatible interface for PostgreSQL (using official recommended image)
+  ferretdb:
+    image: ghcr.io/ferretdb/ferretdb:2.0.0
+    container_name: xbrl-ferretdb
+    platform: linux/amd64
+    environment:
+      - FERRETDB_POSTGRESQL_URL=postgres://ferretdb:ferretdb_password@postgres:5432/postgres
+    ports:
+      - "27017:27017"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  # Deno API Service - RESTful API for XBRL data
+  deno-api:
+    image: denoland/deno:alpine
+    platform: linux/arm64  # Optimized for Apple Silicon
+    container_name: xbrl-deno-api
+    working_dir: /app
+    volumes:
+      - ./api:/app
+      - ./data:/data
+    ports:
+      - "8000:8000"
+    command: run --allow-net --allow-read --allow-env /app/mod.ts
+    environment:
+      - FERRETDB_URI=mongodb://ferretdb:ferretdb_password@ferretdb:27017/postgres
+      - DB_NAME=xbrl_financial_data
+      - PORT=8000
+      - HOST=0.0.0.0
+    depends_on:
+      - ferretdb
+    restart: unless-stopped
+
+  # MCP Server - Message Communication Protocol server
+  mcp-server:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - ./mcp-server:/app
+    command: sh -c "npm install && npx tsc --skipLibCheck --noEmitOnError false && node build/server.js"
+    ports:
+      - "9000:9000"
+    depends_on:
+      - deno-api
+    environment:
+      - API_BASE_URL=http://deno-api:8000
+      - MCP_PORT=9000
+      - MCP_HOST=0.0.0.0
+    restart: unless-stopped
+      
+  # MongoDB Express - Web-based MongoDB admin interface (optional)
+  mongo-express:
+    image: mongo-express:latest
+    container_name: xbrl-mongo-express
+    platform: linux/amd64
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_SERVER: ferretdb
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ferretdb
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ferretdb_password
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin_password
+    depends_on:
+      - ferretdb
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    name: xbrl-postgres-data
+
+networks:
+  default:
+    name: mcpnet
+    driver: bridge
