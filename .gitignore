@@ -1,1 +1,3 @@
 mcp-server/node_modules/
+mcp-server/package-lock.json
+mcp-server/build/
